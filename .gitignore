@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# Local env/config
+.env
+
+# Local Chroma persistence (if you mount a volume here)
+chroma_data/
+
+# OS/editor
+.DS_Store
+
+
