@@ -79,7 +79,7 @@ RESET_COLLECTION=true npm run ingest
 ## Ask questions
 
 ```bash
-npm run ask -- "What happened on June 3, 2005?"
+npm run ask --question "What happened on June 3, 2005?"
 ```
 
 The script prints an answer plus a short **Sources** list.

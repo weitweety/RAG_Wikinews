@@ -37,7 +37,7 @@ export const CONFIG = {
   // Ollama
   ollamaBaseUrl: envString("OLLAMA_BASE_URL", "http://localhost:11434"),
   ollamaEmbedModel: envString("OLLAMA_EMBED_MODEL", "all-minilm"),
-  ollamaChatModel: envString("OLLAMA_CHAT_MODEL", "opencoder"),
+  ollamaChatModel: envString("OLLAMA_CHAT_MODEL", "phi3:mini"),
 
   // Chroma (HTTP server)
   chromaUrl: envString("CHROMA_URL", "http://localhost:8000"),
@@ -47,15 +47,7 @@ export const CONFIG = {
   resetCollection: envBool("RESET_COLLECTION", false),
 
   // Retrieval
-  topK: envInt("TOP_K", 4),
-
-  // Fetching websites
-  userAgent: envString(
-    "USER_AGENT",
-    "RAG_playground/1.0 (+https://localhost; compatible;)"
-  ),
-  timeoutMs: envInt("FETCH_TIMEOUT_MS", 20_000),
-  selector: envString("CHEERIO_SELECTOR", "body"),
+  topK: envInt("TOP_K", 4)
 };
 
 

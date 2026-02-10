@@ -58,24 +58,46 @@ async function loadDocsFromPageIds(page_ids: number[], targetDate?: Date): Promi
   return all;
 }
 
-async function loadLatestNews(): Promise<Document[]> {
+async function loadNewsForDate(date: Date): Promise<Document[]> {
   // Use UTC to avoid timezone issues with filtering
-  const targetDate = new Date(Date.UTC(2005, 5, 3));
-  const targetDateString = targetDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).replace(/ /g, '_');
+  const targetDateString = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).replace(/ /g, '_');
   const url = `https://en.wikinews.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:${targetDateString}&cmnamespace=0&cmlimit=50&format=json`;
   const response = await fetch(url);
   const data = await response.json();
   const page_ids = data.query.categorymembers.map((page: any) => page?.pageid).filter((id: number) => id !== undefined);
-  const pages = await loadDocsFromPageIds(page_ids, targetDate);
-  return pages;
+  return await loadDocsFromPageIds(page_ids, date);
+}
+
+const isValidDate = (dateString: string): boolean => {
+  // YYYY-MM-DD
+  const regex = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+  return regex.test(dateString);
 }
 
 async function main(): Promise<void> {
-  const pages = await loadLatestNews();
+  const argv = process.argv.slice(2);
+  const dIdx = argv.indexOf("--date");
+  const dateString =
+    (dIdx !== -1 && dIdx + 1 < argv.length ? argv[dIdx + 1] : "")?.trim() ||
+    process.env.DATE?.trim() ||
+    "";
+
+  if (!dateString) {
+    console.log(`No date provided. Using today's date in UTC timezone: ${new Date().toISOString().split('T')[0]}.`);
+  }
+  else if (!isValidDate(dateString)) {
+    console.error("Invalid date format. Please use YYYY-MM-DD in UTC timezone. Example: 2026-02-10");
+    process.exit(1);
+  } else {
+    console.log(`Using date: ${dateString} in UTC timezone.`);
+  }
+
+  const date = dateString ? new Date(dateString) : new Date();
+  const pages = await loadNewsForDate(date);
   console.log(pages);
 
   if (pages.length === 0) {
-    console.error("No documents loaded. Nothing to ingest.");
+    console.error(`No documents loaded for the given date: ${dateString}. Nothing to ingest.`);
     process.exit(1);
   }
 

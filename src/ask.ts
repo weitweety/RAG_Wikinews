@@ -95,10 +95,16 @@ function chromaClientParams(): { tenant?: string; database?: string } {
   };
 }
 
+// TODO: 1. Improve chunking to respect the sentence structures.
+// TODO: 2. Try providing more chunks to the LLM to answer the questions. Separate the sources better by URLs.
+// TODO: 3. Test different queries (e.g. asked with categories, etc.)
+
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const qIdx = argv.indexOf("--question");
   const question =
-    process.argv.slice(2).join(" ").trim() ??
-    process.env.QUESTION?.trim() ??
+    (qIdx !== -1 && qIdx + 1 < argv.length ? argv[qIdx + 1] : "")?.trim() ||
+    process.env.QUESTION?.trim() ||
     "";
 
   if (!question) {
@@ -106,7 +112,7 @@ async function main(): Promise<void> {
       [
         "No question provided.",
         "",
-        'Usage: npm run ask -- "Your question here"',
+        'Usage: npm run ask -- --question "Your question here"',
         'Or: QUESTION="Your question" npm run ask',
       ].join("\n")
     );
@@ -159,6 +165,7 @@ async function main(): Promise<void> {
   });
 
   // Test the retrieval directly to see what's returned
+  /*
   console.log(`\nTesting retrieval with query: "${parsedQuery.clean_query}"`);
   const retrievedDocs = await retriever.invoke(parsedQuery.clean_query);
   console.log(`Retrieved ${retrievedDocs.length} document(s)`);
@@ -171,6 +178,7 @@ async function main(): Promise<void> {
       console.log(`  - title: ${meta.title || "N/A"}, date_ts: ${dateTs} (${dateStr}), source: ${meta.source || "N/A"}`);
     }
   }
+  */
 
   // Main chat LLM for answering questions
   const llm = new ChatOllama({
@@ -183,6 +191,9 @@ async function main(): Promise<void> {
     [
       "You are a helpful assistant. Answer the question using ONLY the provided context.",
       "If the context does not contain the answer, say you don't know.",
+      "Do not use prior knowledge. Always Quote the sentence(s) you used.",
+      "Do not make up information. If you don't know the answer, say you don't know.",
+      "Do not use any other information than the context provided.",
       "",
       "<context>",
       "{context}",
