@@ -94,16 +94,19 @@ async function main(): Promise<void> {
 
   const date = dateString ? new Date(dateString) : new Date();
   const pages = await loadNewsForDate(date);
-  console.log(pages);
 
   if (pages.length === 0) {
     console.error(`No documents loaded for the given date: ${dateString}. Nothing to ingest.`);
     process.exit(1);
   }
+  else {
+    console.log(`Loaded ${pages.length} pages for the given date: ${dateString}.`);
+  }
 
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize: CONFIG.chunkSize,
     chunkOverlap: CONFIG.chunkOverlap,
+    separators: ["\n\n", "\n", ".", "!", "?", " ", ""]
   });
 
   const chunks = await splitter.splitDocuments(pages);
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
       ...chunks[i].metadata,
       chunkIndex: i,
     };
+    console.log(`Chunk ${i}: ${chunks[i].pageContent}`);
   }
 
   console.log(
