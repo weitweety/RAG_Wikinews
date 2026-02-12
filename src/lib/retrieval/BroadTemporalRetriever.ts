@@ -9,6 +9,9 @@ export class BroadTemporalRetriever extends BaseRetriever {
         super();
     }
 
+    // TODO: implement maxMarginalRelevanceSearch for chroma
+    // consider accepting Chroma instance instead of VectorStore
+    // https://chatgpt.com/c/698c43a4-51ec-832e-ba0a-5bf1a9206024
     async retrieve(query: AnalyzedQuery): Promise<DocumentInterface[]> {
         if (!this.vectorStore.maxMarginalRelevanceSearch) {
             throw new Error("Vector store does not support maxMarginalRelevanceSearch");

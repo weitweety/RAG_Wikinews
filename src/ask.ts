@@ -1,10 +1,11 @@
 import { Chroma } from "@langchain/community/vectorstores/chroma";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
-import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
-import { createRetrievalChain } from "langchain/chains/retrieval";
 
 import { CONFIG } from "./lib/config.js";
+import { BroadTemporalRetriever } from "./lib/retrieval/BroadTemporalRetriever.js";
+import type { AnalyzedQuery } from "./lib/models/QueryTypes.js";
 
 interface ParsedQuery {
   clean_query: string;
@@ -157,16 +158,17 @@ async function main(): Promise<void> {
     console.log("No date filter applied");
   }
 
-  // Create retriever with optional date filter
-  const retriever = vectorStore.asRetriever({
-    k: CONFIG.topK,
+  // Build analyzed query for the retriever
+  const analyzedQuery: AnalyzedQuery = {
+    clean_query: parsedQuery.clean_query,
+    query_type: "broad_temporal",
     filter: dateFilter,
-  });
+  };
 
-  // Test the retrieval directly to see what's returned
-  
-  console.log(`\nTesting retrieval with query: "${parsedQuery.clean_query}"`);
-  const retrievedDocs = await retriever.invoke(parsedQuery.clean_query);
+  // Retrieve documents using BroadTemporalRetriever (MMR)
+  const broadRetriever = new BroadTemporalRetriever(vectorStore);
+  console.log(`\nRetrieving with BroadTemporalRetriever (MMR): "${analyzedQuery.clean_query}"`);
+  const retrievedDocs = await broadRetriever.retrieve(analyzedQuery);
   console.log(`Retrieved ${retrievedDocs.length} document(s)`);
   if (retrievedDocs.length > 0) {
     console.log("Retrieved documents metadata:");
@@ -177,7 +179,11 @@ async function main(): Promise<void> {
       console.log(`  - title: ${meta.title || "N/A"}, date_ts: ${dateTs} (${dateStr}), source: ${meta.source || "N/A"}`);
     }
   }
-  
+
+  // Format retrieved documents as context
+  const context = retrievedDocs
+    .map((doc) => doc.pageContent)
+    .join("\n\n---\n\n");
 
   // Main chat LLM for answering questions
   const llm = new ChatOllama({
@@ -204,28 +210,20 @@ async function main(): Promise<void> {
     ].join("\n")
   );
 
-  const combineDocsChain = await createStuffDocumentsChain({
-    llm,
-    prompt,
+  const chain = prompt.pipe(llm).pipe(new StringOutputParser());
+
+  const answer = await chain.invoke({
+    context,
+    input: parsedQuery.clean_query,
   });
 
-  const chain = await createRetrievalChain({
-    retriever,
-    combineDocsChain,
-  });
+  console.log(answer.trim());
 
-  // Use the clean query (with date info removed) for retrieval
-  const result = await chain.invoke({ input: parsedQuery.clean_query });
-
-  // result.answer should be string (default output parser)
-  console.log(String(result.answer).trim());
-
-  const ctx = Array.isArray(result.context) ? result.context : [];
-  if (ctx.length > 0) {
+  if (retrievedDocs.length > 0) {
     console.log("\nSources:");
     const seen = new Set<string>();
-    for (const doc of ctx) {
-      const source = String((doc as any)?.metadata?.source ?? "").trim();
+    for (const doc of retrievedDocs) {
+      const source = String(doc.metadata?.source ?? "").trim();
       if (!source || seen.has(source)) continue;
       seen.add(source);
       console.log(`- ${source}`);
