@@ -97,7 +97,8 @@ function chromaClientParams(): { tenant?: string; database?: string } {
 }
 
 // DONE: 1. Improve chunking to respect the sentence structures.
-// TODO: 2. Try to implement more retrieval logics. E.g. MMR which should consider fetching chunks from different documents.
+// DONE: 2. Try to implement more retrieval logics. E.g. MMR which should consider fetching chunks from different documents.
+// TODO: 3. Debug -- Retrieval retrieve different documents, why LLM only answers based on one?
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -161,6 +162,7 @@ async function main(): Promise<void> {
   // Build analyzed query for the retriever
   const analyzedQuery: AnalyzedQuery = {
     clean_query: parsedQuery.clean_query,
+    query_embedding: await embeddings.embedQuery(parsedQuery.clean_query),
     query_type: "broad_temporal",
     filter: dateFilter,
   };
