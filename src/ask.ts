@@ -6,6 +6,7 @@ import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
 import { CONFIG } from "./lib/config.js";
 import { BroadTemporalRetriever } from "./lib/retrieval/BroadTemporalRetriever.js";
 import type { AnalyzedQuery } from "./lib/models/QueryTypes.js";
+import { PromptTemplates } from "./lib/prompt/PromptTemplates.js";
 
 interface ParsedQuery {
   clean_query: string;
@@ -98,7 +99,8 @@ function chromaClientParams(): { tenant?: string; database?: string } {
 
 // DONE: 1. Improve chunking to respect the sentence structures.
 // DONE: 2. Try to implement more retrieval logics. E.g. MMR which should consider fetching chunks from different documents.
-// TODO: 3. Debug -- Retrieval retrieve different documents, why LLM only answers based on one?
+// TODO: 3. Combine chunks sharing same document. Structure the prompt to ensure LLM process all documents.
+// https://chatgpt.com/c/698c43a4-51ec-832e-ba0a-5bf1a9206024
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -159,6 +161,7 @@ async function main(): Promise<void> {
     console.log("No date filter applied");
   }
 
+  // TODO: the retriever and prompt template should be determined by the real query_type.
   // Build analyzed query for the retriever
   const analyzedQuery: AnalyzedQuery = {
     clean_query: parsedQuery.clean_query,
@@ -194,23 +197,7 @@ async function main(): Promise<void> {
     temperature: 0,
   });
 
-  const prompt = ChatPromptTemplate.fromTemplate(
-    [
-      "You are a helpful assistant. Answer the question using ONLY the provided context.",
-      "If the context does not contain the answer, say you don't know.",
-      "Do not use prior knowledge. Always Quote the sentence(s) you used.",
-      "Quote the exact sentence from the context that answers the question. Do not paraphrase unnecessarily.",
-      "Do not make up information. If you don't know the answer, say you don't know.",
-      "Do not use any other information than the context provided.",
-      "",
-      "<context>",
-      "{context}",
-      "</context>",
-      "",
-      "Question: {input}",
-      "Answer:",
-    ].join("\n")
-  );
+  const prompt = ChatPromptTemplate.fromTemplate(PromptTemplates.getPromptTemplate(analyzedQuery.query_type, "context", "input"));
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
 
