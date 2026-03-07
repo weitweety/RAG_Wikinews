@@ -76,6 +76,18 @@ To wipe and rebuild the collection:
 RESET_COLLECTION=true npm run ingest
 ```
 
+To ingest news for a specific date (UTC, `YYYY-MM-DD`):
+
+```bash
+npm run ingest -- --date 2026-02-10
+```
+
+You can also provide the date via environment variable:
+
+```bash
+DATE=2026-02-10 npm run ingest
+```
+
 ## Ask questions
 
 ```bash

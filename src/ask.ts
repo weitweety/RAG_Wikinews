@@ -1,4 +1,5 @@
 import { Chroma } from "@langchain/community/vectorstores/chroma";
+import { Document } from "@langchain/core/documents";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
@@ -97,6 +98,76 @@ function chromaClientParams(): { tenant?: string; database?: string } {
   };
 }
 
+function mergeChunksByPageId(docs: Document[]): Document[] {
+  type ChunkEntry = {
+    text: string;
+    chunkIndex: number | null;
+    originalOrder: number;
+  };
+
+  type Group = {
+    metadata: Record<string, unknown>;
+    chunks: ChunkEntry[];
+  };
+
+  const groups = new Map<string, Group>();
+  let fallbackCounter = 0;
+
+  for (let i = 0; i < docs.length; i++) {
+    const doc = docs[i];
+    const pageId = doc.metadata?.page_id;
+    const groupKey = pageId !== undefined && pageId !== null && String(pageId).trim() !== ""
+      ? String(pageId)
+      : `unknown-${fallbackCounter++}`;
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        metadata: { ...doc.metadata },
+        chunks: [],
+      });
+    }
+
+    const group = groups.get(groupKey)!;
+    const rawChunkIndex = doc.metadata?.chunkIndex;
+    const chunkIndex =
+      typeof rawChunkIndex === "number" && Number.isFinite(rawChunkIndex)
+        ? rawChunkIndex
+        : null;
+
+    group.chunks.push({
+      text: doc.pageContent,
+      chunkIndex,
+      originalOrder: i,
+    });
+  }
+
+  const mergedDocs: Document[] = [];
+  for (const [, group] of groups) {
+    group.chunks.sort((a, b) => {
+      if (a.chunkIndex !== null && b.chunkIndex !== null) {
+        return a.chunkIndex - b.chunkIndex;
+      }
+      if (a.chunkIndex !== null) return -1;
+      if (b.chunkIndex !== null) return 1;
+      return a.originalOrder - b.originalOrder;
+    });
+
+    const mergedContent = group.chunks
+      .map((chunk) => chunk.text.trim())
+      .filter((chunk) => chunk.length > 0)
+      .join("\n\n");
+
+    mergedDocs.push(
+      new Document({
+        pageContent: mergedContent,
+        metadata: group.metadata,
+      })
+    );
+  }
+
+  return mergedDocs;
+}
+
 // DONE: 1. Improve chunking to respect the sentence structures.
 // DONE: 2. Try to implement more retrieval logics. E.g. MMR which should consider fetching chunks from different documents.
 // TODO: 3. Combine chunks sharing same document. Structure the prompt to ensure LLM process all documents.
@@ -174,7 +245,7 @@ async function main(): Promise<void> {
   const broadRetriever = new BroadTemporalRetriever(vectorStore);
   console.log(`\nRetrieving with BroadTemporalRetriever (MMR): "${analyzedQuery.clean_query}"`);
   const retrievedDocs = await broadRetriever.retrieve(analyzedQuery);
-  console.log(`Retrieved ${retrievedDocs.length} document(s)`);
+  console.log(`Retrieved ${retrievedDocs.length} chunk(s)`);
   if (retrievedDocs.length > 0) {
     console.log("Retrieved documents metadata:");
     for (const doc of retrievedDocs) {
@@ -185,8 +256,11 @@ async function main(): Promise<void> {
     }
   }
 
+  const mergedDocs = mergeChunksByPageId(retrievedDocs);
+  console.log(`Merged into ${mergedDocs.length} document(s) by page_id`);
+
   // Format retrieved documents as context
-  const context = retrievedDocs
+  const context = mergedDocs
     .map((doc) => doc.pageContent)
     .join("\n\n---\n\n");
 
