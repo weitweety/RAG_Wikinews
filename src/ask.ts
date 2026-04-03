@@ -1,5 +1,5 @@
 import { Chroma } from "@langchain/community/vectorstores/chroma";
-import { Document } from "@langchain/core/documents";
+import { Document, DocumentInterface } from "@langchain/core/documents";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
@@ -15,11 +15,16 @@ interface ParsedQuery {
   date_range: { start: string; end: string } | null;
 }
 
+interface AskOptions {
+  dateFilteringEnabled: boolean;
+  broadTemporalRetrieverEnabled: boolean;
+}
+
 const QUERY_PARSER_PROMPT = `You are a query parser.
 
 From the user query:
 - Extract any referenced date or date range.
-- Remove the date information from the query.
+- Remove the date information from the query, the clean_query should not contain any date information.
 - Do not answer the question.
 
 Output JSON with this exact schema:
@@ -44,7 +49,7 @@ async function parseQuery(query: string, llm: ChatOllama): Promise<ParsedQuery> 
   // Extract JSON from the response (handle potential markdown code blocks)
   const jsonMatch = content.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    console.warn("Query parser did not return valid JSON, using original query");
+    console.warn("[debug]       Query parser did not return valid JSON, using original query");
     return { clean_query: query, date: null, date_range: null };
   }
 
@@ -56,7 +61,7 @@ async function parseQuery(query: string, llm: ChatOllama): Promise<ParsedQuery> 
       date_range: parsed.date_range || null,
     };
   } catch {
-    console.warn("Failed to parse query parser JSON, using original query");
+    console.warn("[debug] Failed to parse query parser JSON, using original query");
     return { clean_query: query, date: null, date_range: null };
   }
 }
@@ -91,6 +96,29 @@ function buildDateFilter(parsedQuery: ParsedQuery): Record<string, any> | undefi
   return undefined;
 }
 
+function parseToggleOption(
+  argv: string[],
+  flag: string,
+  defaultValue: boolean
+): boolean {
+  const idx = argv.indexOf(flag);
+  if (idx === -1) return defaultValue;
+  const raw = argv[idx + 1];
+  if (!raw) return defaultValue;
+  const normalized = raw.trim().toLowerCase();
+  if (["on", "true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["off", "false", "0", "no", "n"].includes(normalized)) return false;
+  console.warn(`Invalid value for ${flag}: "${raw}". Using default (${defaultValue ? "on" : "off"}).`);
+  return defaultValue;
+}
+
+function parseOptions(argv: string[]): AskOptions {
+  return {
+    dateFilteringEnabled: parseToggleOption(argv, "--date-filtering", true),
+    broadTemporalRetrieverEnabled: parseToggleOption(argv, "--broad-temporal-retriever", true),
+  };
+}
+
 function chromaClientParams(): { tenant?: string; database?: string } {
   return {
     ...(CONFIG.chromaTenant ? { tenant: CONFIG.chromaTenant } : {}),
@@ -98,7 +126,7 @@ function chromaClientParams(): { tenant?: string; database?: string } {
   };
 }
 
-function mergeChunksByPageId(docs: Document[]): Document[] {
+function mergeChunksByPageId(docs: DocumentInterface[]): Document[] {
   type ChunkEntry = {
     text: string;
     chunkIndex: number | null;
@@ -175,6 +203,7 @@ function mergeChunksByPageId(docs: Document[]): Document[] {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const options = parseOptions(argv);
   const qIdx = argv.indexOf("--question");
   const question =
     (qIdx !== -1 && qIdx + 1 < argv.length ? argv[qIdx + 1] : "")?.trim() ||
@@ -187,6 +216,7 @@ async function main(): Promise<void> {
         "No question provided.",
         "",
         'Usage: npm run ask -- --question "Your question here"',
+        'Optional: --date-filtering on|off --broad-temporal-retriever on|off',
         'Or: QUESTION="Your question" npm run ask',
       ].join("\n")
     );
@@ -212,24 +242,26 @@ async function main(): Promise<void> {
   });
 
   // Parse the query to extract date info and clean query
-  console.log("Parsing query...");
+  console.log("[debug] Parsing query...");
   const parsedQuery = await parseQuery(question, parserLlm);
-  console.log("Parsed query:", JSON.stringify(parsedQuery, null, 2));
+  console.log("[debug] Parsed query:", JSON.stringify(parsedQuery, null, 2));
 
-  // Build date filter if date was extracted
-  const dateFilter = buildDateFilter(parsedQuery);
+  // Build date filter only when explicitly enabled
+  const dateFilter = options.dateFilteringEnabled ? buildDateFilter(parsedQuery) : undefined;
 
   // Log filter details for debugging
-  if (dateFilter) {
-    console.log("Date filter applied:", JSON.stringify(dateFilter, null, 2));
+  if (!options.dateFilteringEnabled) {
+    console.log("[debug] Date filtering disabled by --date-filtering off");
+  } else if (dateFilter) {
+    console.log("[debug] Date filter applied:", JSON.stringify(dateFilter, null, 2));
     // Also log human-readable dates
     if (parsedQuery.date) {
       const startOfDay = new Date(`${parsedQuery.date}T00:00:00Z`);
       const endOfDay = new Date(`${parsedQuery.date}T23:59:59Z`);
-      console.log(`Filtering for date: ${parsedQuery.date} (${startOfDay.getTime()} to ${endOfDay.getTime()})`);
+      console.log(`[debug] Filtering for date: ${parsedQuery.date} (${startOfDay.getTime()} to ${endOfDay.getTime()})`);
     }
   } else {
-    console.log("No date filter applied");
+    console.log("[debug] No date filter applied");
   }
 
   // TODO: the retriever and prompt template should be determined by the real query_type.
@@ -241,13 +273,24 @@ async function main(): Promise<void> {
     filter: dateFilter,
   };
 
-  // Retrieve documents using BroadTemporalRetriever (MMR)
-  const broadRetriever = new BroadTemporalRetriever(vectorStore);
-  console.log(`\nRetrieving with BroadTemporalRetriever (MMR): "${analyzedQuery.clean_query}"`);
-  const retrievedDocs = await broadRetriever.retrieve(analyzedQuery);
-  console.log(`Retrieved ${retrievedDocs.length} chunk(s)`);
+  let retrievedDocs: DocumentInterface[];
+  if (options.broadTemporalRetrieverEnabled) {
+    // Retrieve documents using BroadTemporalRetriever (MMR)
+    const broadRetriever = new BroadTemporalRetriever(vectorStore);
+    console.log(`\n[debug] Retrieving with BroadTemporalRetriever (MMR): "${analyzedQuery.clean_query}"`);
+    retrievedDocs = await broadRetriever.retrieve(analyzedQuery);
+  } else {
+    // Fall back to built-in Chroma retrieval
+    console.log(`\n[debug] Retrieving with built-in Chroma similarity search: "${analyzedQuery.clean_query}"`);
+    retrievedDocs = await vectorStore.similaritySearch(
+      analyzedQuery.clean_query,
+      CONFIG.topK,
+      analyzedQuery.filter
+    );
+  }
+  console.log(`[debug] Retrieved ${retrievedDocs.length} chunk(s)`);
   if (retrievedDocs.length > 0) {
-    console.log("Retrieved documents metadata:");
+    console.log("[debug] Retrieved documents metadata:");
     for (const doc of retrievedDocs) {
       const meta = doc.metadata;
       const dateTs = meta.date_ts;
@@ -256,13 +299,27 @@ async function main(): Promise<void> {
     }
   }
 
-  const mergedDocs = mergeChunksByPageId(retrievedDocs);
-  console.log(`Merged into ${mergedDocs.length} document(s) by page_id`);
+  const contextDocs = options.broadTemporalRetrieverEnabled
+    ? mergeChunksByPageId(retrievedDocs)
+    : retrievedDocs;
+  if (options.broadTemporalRetrieverEnabled) {
+    console.log(`[debug] Merged into ${contextDocs.length} document(s) by page_id`);
+  } else {
+    console.log("[debug] Skipping page_id merge because --broad-temporal-retriever is off");
+  }
 
-  // Format retrieved documents as context
-  const context = mergedDocs
-    .map((doc) => doc.pageContent)
-    .join("\n\n---\n\n");
+  // Format retrieved documents as context. In broad temporal mode, add explicit
+  // article boundaries and titles so one-bullet-per-article is enforceable.
+  const context = options.broadTemporalRetrieverEnabled
+    ? contextDocs
+      .map((doc, idx) => {
+        const title = String(doc.metadata?.title ?? `Untitled Article ${idx + 1}`).trim();
+        return `Title: ${title}\n\n${doc.pageContent}`;
+      })
+      .join("\n\n----- Article Separator -----\n\n")
+    : contextDocs
+      .map((doc) => doc.pageContent)
+      .join("\n\n---\n\n");
 
   // Main chat LLM for answering questions
   const llm = new ChatOllama({
@@ -271,16 +328,21 @@ async function main(): Promise<void> {
     temperature: 0,
   });
 
-  const prompt = ChatPromptTemplate.fromTemplate(PromptTemplates.getPromptTemplate(analyzedQuery.query_type, "context", "input"));
+  const prompt = ChatPromptTemplate.fromTemplate(
+    PromptTemplates.getPromptTemplate(analyzedQuery.query_type, "context", "input", {
+      includePerArticleInstructions: options.broadTemporalRetrieverEnabled,
+    })
+  );
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
 
   const answer = await chain.invoke({
     context,
     input: parsedQuery.clean_query,
+    article_count: contextDocs.length,
   });
 
-  console.log(answer.trim());
+  console.log(`[Final Answer] Answer: ${answer.trim()}`);
 
   if (retrievedDocs.length > 0) {
     console.log("\nSources:");

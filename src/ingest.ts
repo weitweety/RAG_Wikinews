@@ -14,7 +14,50 @@ function chromaClientParams(): { tenant?: string; database?: string } {
   };
 }
 
+const WIKINEWS_API_URL = "https://en.wikinews.org/w/api.php";
+
+async function fetchJsonFromWikinews(params: Record<string, string>): Promise<any> {
+  const url = new URL(WIKINEWS_API_URL);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "RAG_Wikinews/1.0 (local development script)",
+    },
+  });
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const rawBody = await response.text();
+
+  if (!response.ok) {
+    const snippet = rawBody.slice(0, 200).replace(/\s+/g, " ");
+    throw new Error(
+      `Wikinews API request failed (${response.status} ${response.statusText}) for ${url.toString()}. Response preview: ${snippet}`
+    );
+  }
+
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const snippet = rawBody.slice(0, 200).replace(/\s+/g, " ");
+    throw new Error(
+      `Wikinews API returned non-JSON content-type "${contentType}" for ${url.toString()}. Response preview: ${snippet}`
+    );
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    const snippet = rawBody.slice(0, 200).replace(/\s+/g, " ");
+    throw new Error(
+      `Failed to parse Wikinews API JSON for ${url.toString()}. Response preview: ${snippet}`
+    );
+  }
+}
+
 async function maybeResetCollection(): Promise<void> {
+  console.log(`Resetting collection: ${CONFIG.resetCollection}`);
   if (!CONFIG.resetCollection) return;
 
   const client = new ChromaClient({
@@ -37,10 +80,14 @@ async function maybeResetCollection(): Promise<void> {
 async function loadDocsFromPageIds(page_ids: number[], targetDate?: Date): Promise<Document[]> {
   const all: Document[] = [];
   for (const page_id of page_ids) {
-    const url = `https://en.wikinews.org/w/api.php?action=query&pageids=${page_id}&prop=extracts&explaintext=true&format=json`;
-    const response = await fetch(url);
-    const data = await response.json();
-    const page = data.query.pages[page_id];
+    const data = await fetchJsonFromWikinews({
+      action: "query",
+      pageids: String(page_id),
+      prop: "extracts",
+      explaintext: "true",
+      format: "json",
+    });
+    const page = data?.query?.pages?.[page_id];
     console.log(page);
     if (page.extract) {
       all.push(new Document({
@@ -61,10 +108,17 @@ async function loadDocsFromPageIds(page_ids: number[], targetDate?: Date): Promi
 async function loadNewsForDate(date: Date): Promise<Document[]> {
   // Use UTC to avoid timezone issues with filtering
   const targetDateString = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).replace(/ /g, '_');
-  const url = `https://en.wikinews.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:${targetDateString}&cmnamespace=0&cmlimit=50&format=json`;
-  const response = await fetch(url);
-  const data = await response.json();
-  const page_ids = data.query.categorymembers.map((page: any) => page?.pageid).filter((id: number) => id !== undefined);
+  const data = await fetchJsonFromWikinews({
+    action: "query",
+    list: "categorymembers",
+    cmtitle: `Category:${targetDateString}`,
+    cmnamespace: "0",
+    cmlimit: "50",
+    format: "json",
+  });
+  const page_ids = (data?.query?.categorymembers ?? [])
+    .map((page: any) => page?.pageid)
+    .filter((id: number) => id !== undefined);
   return await loadDocsFromPageIds(page_ids, date);
 }
 
