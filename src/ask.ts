@@ -20,6 +20,22 @@ interface AskOptions {
   broadTemporalRetrieverEnabled: boolean;
 }
 
+const ISO_DATE_REGEX = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const MONTH_NAME_TO_INDEX: Record<string, number> = {
+  january: 0,
+  february: 1,
+  march: 2,
+  april: 3,
+  may: 4,
+  june: 5,
+  july: 6,
+  august: 7,
+  september: 8,
+  october: 9,
+  november: 10,
+  december: 11,
+};
+
 const QUERY_PARSER_PROMPT = `You are a query parser.
 
 From the user query:
@@ -33,7 +49,28 @@ Output JSON with this exact schema:
   "date": string | null,
   "date_range": {{ "start": string, "end": string }} | null
 }}
-Dates must be in ISO format (YYYY-MM-DD).
+Strict output rules:
+- Output ONLY valid JSON. No markdown, no code block, no extra text.
+- A single-day date MUST use "date" in ISO format YYYY-MM-DD.
+- A range MUST use "date_range" with both "start" and "end" in ISO format YYYY-MM-DD.
+- If "date" is non-null, "date_range" must be null.
+- If "date_range" is non-null, "date" must be null.
+- Never output partial or invalid date strings (examples of forbidden values: "2in", "January 2026", "2026-1").
+- If uncertain, set both "date" and "date_range" to null.
+
+Normalization rules:
+- Month + year (e.g. "January 2026") => date_range for the full month.
+- Year only (e.g. "in 2026") => date_range for the full year.
+- Relative words like "early", "mid", "late" must still map to valid ISO ranges.
+- Preserve non-date meaning in "clean_query"; remove only temporal phrase(s).
+
+Examples:
+- Query: "What happened in 2026?"
+  Output: {{"clean_query":"What happened?","date":null,"date_range":{{"start":"2026-01-01","end":"2026-12-31"}}}}
+- Query: "What happened in January 2026?"
+  Output: {{"clean_query":"What happened?","date":null,"date_range":{{"start":"2026-01-01","end":"2026-01-31"}}}}
+- Query: "What happened on 2026-01-01?"
+  Output: {{"clean_query":"What happened?","date":"2026-01-01","date_range":null}}
 
 User query: {query}
 
@@ -55,10 +92,43 @@ async function parseQuery(query: string, llm: ChatOllama): Promise<ParsedQuery> 
 
   try {
     const parsed = JSON.parse(jsonMatch[0]) as ParsedQuery;
+    const normalizedDate = ISO_DATE_REGEX.test(String(parsed.date ?? "")) ? String(parsed.date) : null;
+    const normalizedDateRange =
+      parsed.date_range &&
+      ISO_DATE_REGEX.test(String(parsed.date_range.start ?? "")) &&
+      ISO_DATE_REGEX.test(String(parsed.date_range.end ?? ""))
+        ? {
+          start: String(parsed.date_range.start),
+          end: String(parsed.date_range.end),
+        }
+        : null;
+
+    // Deterministic fallback: if LLM parsing fails for month-year text (e.g. "March, 2026"),
+    // recover an ISO range from the original query.
+    const monthYearMatch = query.match(
+      /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s*,?\s*(\d{4})\b/i
+    );
+    let fallbackRange: { start: string; end: string } | null = null;
+    let cleanQuery = parsed.clean_query || query;
+    if (!normalizedDate && !normalizedDateRange && monthYearMatch) {
+      const monthName = monthYearMatch[1].toLowerCase();
+      const year = Number.parseInt(monthYearMatch[2], 10);
+      const monthIndex = MONTH_NAME_TO_INDEX[monthName];
+      if (Number.isFinite(year) && monthIndex !== undefined) {
+        const start = new Date(Date.UTC(year, monthIndex, 1));
+        const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+        fallbackRange = {
+          start: start.toISOString().slice(0, 10),
+          end: end.toISOString().slice(0, 10),
+        };
+        cleanQuery = query.replace(monthYearMatch[0], "").replace(/\s+/g, " ").trim();
+      }
+    }
+
     return {
-      clean_query: parsed.clean_query || query,
-      date: parsed.date || null,
-      date_range: parsed.date_range || null,
+      clean_query: cleanQuery || query,
+      date: normalizedDate,
+      date_range: normalizedDateRange ?? fallbackRange,
     };
   } catch {
     console.warn("[debug] Failed to parse query parser JSON, using original query");
