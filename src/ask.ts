@@ -266,11 +266,6 @@ function mergeChunksByPageId(docs: DocumentInterface[]): Document[] {
   return mergedDocs;
 }
 
-// DONE: 1. Improve chunking to respect the sentence structures.
-// DONE: 2. Try to implement more retrieval logics. E.g. MMR which should consider fetching chunks from different documents.
-// TODO: 3. Combine chunks sharing same document. Structure the prompt to ensure LLM process all documents.
-// https://chatgpt.com/c/698c43a4-51ec-832e-ba0a-5bf1a9206024
-
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const options = parseOptions(argv);
@@ -334,7 +329,6 @@ async function main(): Promise<void> {
     console.log("[debug] No date filter applied");
   }
 
-  // TODO: the retriever and prompt template should be determined by the real query_type.
   // Build analyzed query for the retriever
   const analyzedQuery: AnalyzedQuery = {
     clean_query: parsedQuery.clean_query,
